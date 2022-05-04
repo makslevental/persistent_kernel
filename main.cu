@@ -1,42 +1,12 @@
-#include <algorithm>
-#include <cassert>
 #include <chrono>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <functional>
 #include <iostream>
 #include <numeric>
-#include <stdio.h>
-#include <sys/time.h>
-#include <time.h>
-
+#include <cstdio>
 #include <vector>
 
-//#define USECPSEC 1000000ULL
-//
-// unsigned long long dtime_usec(unsigned long long start) {
-//  timeval tv;
-//  gettimeofday(&tv, 0);
-//  return ((tv.tv_sec * USECPSEC) + tv.tv_usec) - start;
-//}
-//
-//__global__ void tkernel() {}
-
-// void profile_overhead() {
-//   float dt_uspec = 0;
-//   for (int i = 0; i < 1000; i++) {
-//     tkernel<<<2000, 32>>>();
-//     cudaDeviceSynchronize();
-//     unsigned long long dt = dtime_usec(0);
-//     unsigned long long dt1 = dt;
-//     tkernel<<<2000, 32>>>();
-//     dt = dtime_usec(dt);
-//     cudaDeviceSynchronize();
-//     dt1 = dtime_usec(dt1);
-//     dt_uspec += dt / (float)USECPSEC;
-//   }
-//   printf("kernel launch: %fs", dt_uspec / 1000);
-// }
 
 inline double get_time() {
     using namespace std::chrono;
@@ -96,6 +66,7 @@ public:
     int32_t *dev_ptr __attribute__((aligned(64)));
 };
 
+template<class FloatType>
 struct SummaryStats {
     SummaryStats(){};
     /**
@@ -105,11 +76,11 @@ struct SummaryStats {
    *
    * Note this will modify v by doing a partial sort to compute the median.
    */
-    SummaryStats(std::vector<double> &v) {
-        const double sum = std::accumulate(v.begin(), v.end(), 0.0);
+    SummaryStats(std::vector<FloatType> &v) {
+        const FloatType sum = std::accumulate(v.begin(), v.end(), 0.0);
         mean = sum / v.size();
         if (v.size() > 1) {
-            double sqsum = 0.0;
+            FloatType sqsum = 0.0;
             for (const auto &x: v) {
                 sqsum += (x - mean) * (x - mean);
             }
@@ -123,19 +94,21 @@ struct SummaryStats {
             max = *minmax.second;
         }
     }
-    double mean = std::numeric_limits<double>::quiet_NaN();
-    double stdev = std::numeric_limits<double>::quiet_NaN();
-    double median = std::numeric_limits<double>::quiet_NaN();
-    double min = std::numeric_limits<double>::quiet_NaN();
-    double max = std::numeric_limits<double>::quiet_NaN();
+    FloatType mean = std::numeric_limits<FloatType>::quiet_NaN();
+    FloatType stdev = std::numeric_limits<FloatType>::quiet_NaN();
+    FloatType median = std::numeric_limits<FloatType>::quiet_NaN();
+    FloatType min = std::numeric_limits<FloatType>::quiet_NaN();
+    FloatType max = std::numeric_limits<FloatType>::quiet_NaN();
 };
 
-inline std::ostream &operator<<(std::ostream &os, const SummaryStats &summary) {
-    os << "mean " << summary.mean << "s "
-       << "median " << summary.median << "s "
-       << "stdev " << summary.stdev << "s "
-       << "min " << summary.min << "s "
-       << "max " << summary.max << "s ";
+
+template<class FloatType>
+inline std::ostream &operator<<(std::ostream &os, const SummaryStats<FloatType> &summary) {
+    os << summary.mean << " | "
+       << summary.median << " | "
+       << summary.stdev << " | "
+       << summary.min << " | "
+       << summary.max << " | ";
     return os;
 }
 
@@ -161,12 +134,37 @@ void do_benchmark(cudaStream_t stream, Wait &wait) {
 
         cudaStreamSynchronize(stream);
     }
-    std::cout << "Launch wait: " << SummaryStats(launch_times) << std::endl;
-    std::cout << "Signal end wait: " << SummaryStats(times) << std::endl;
+    std::cout << "| Launch | " << SummaryStats(launch_times) << std::endl;
+    std::cout << "| Signal | " << SummaryStats(times) << std::endl;
     cudaEventDestroy(e);
 }
 
+__global__ void EmptyKernel() {}
+
+void profile_conventional_launch_overhead() {
+    const int N = 100000;
+
+    float time, cumulative_time = 0.f;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+
+    for (int i = 0; i < N; i++) {
+
+        cudaEventRecord(start, 0);
+        EmptyKernel<<<1, 1>>>();
+        cudaEventRecord(stop, 0);
+        cudaEventSynchronize(stop);
+        cudaEventElapsedTime(&time, start, stop);
+        cumulative_time = cumulative_time + time;
+    }
+    printf("Kernel launch overhead time:  %3.5f ms \n", cumulative_time / N);
+}
+
+
 int main(int, char **) {
+    profile_conventional_launch_overhead();
+
     cudaSetDevice(0);
     cudaStream_t stream;
     cudaStreamCreate(&stream);
